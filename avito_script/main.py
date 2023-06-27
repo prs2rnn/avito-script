@@ -14,14 +14,6 @@ import requests
 pagens = 1
 domain = "https://www.avito.ru"
 
-cols = (
-   "Год выпуска", "Поколение", "Состояние", "Модификация", "Объём двигателя",
-   "Тип двигателя", "Коробка передач", "Привод",
-   "Тип кузова", "Цвет", "Руль", "VIN или номер кузова", "Заголовок",
-   "Марка", "Модель", "Дата", "Цена", "Локация", "Описание", "Расход топлива смешанный",
-   "Разгон до 100 км/ч", "Длина", "Высота", "Дорожный просвет", "Колея передняя",
-   "Колея задняя", "Ёмкость топливного бака"
-)
 
 class QueryError(Exception):
     """base exception when query or parse page"""
@@ -60,12 +52,12 @@ def save_json(card_data: dict[str, str]) -> None:
 
 
 def get_card_markup(session: requests.Session, url: str) -> str:
-    markup = session.get(url, headers=headers, timeout=5).content.decode()
+    markup = session.get(url, headers=headers, timeout=10).content.decode()
     return markup
 
 
 def get_details_markup(session: requests.Session, url: str) -> str:
-    markup = session.get(url, headers=headers, timeout=5).content.decode()
+    markup = session.get(url, headers=headers, timeout=10).content.decode()
     return markup
 
 
@@ -79,9 +71,9 @@ def parse_pagen(markup_pagen: str) -> list[str]:
 
 
 def get_card_urls(session: requests.Session, pagen_url: str) -> list[str]:
-    markup_pagen = session.get(pagen_url, headers=headers, timeout=5).content.decode()
+    markup_pagen = session.get(pagen_url, headers=headers, timeout=10).content.decode()
     card_urls = parse_pagen(markup_pagen)
-    if not card_urls: raise QueryError("can't parse card urls")
+    if not card_urls: raise QueryError("can't parse card urls. 403 response.")
     return card_urls
 
 
@@ -96,31 +88,47 @@ def parse_card_details(markup_card_data: str) -> dict[str, str]:
     return dict(filter(lambda tpl: tpl[0] in cols, full.items()))
 
 
-def parse_card(card_markup: str) -> tuple[str, dict]:
+def parse_card(card_markup: str) -> tuple[str | None, dict]:
     soup = BeautifulSoup(card_markup, "lxml")
-    card_data_url = domain + \
-        soup.find("div", class_="params-specification-__5qD").find("a")["href"]  # pyright: ignore
-    title = soup.find("span", class_="title-info-title-text").text  # pyright: ignore
-    brand, model = title.split()[0], title.split()[1].strip(",")
+    try:
+        card_data_url = domain + \
+            soup.find("div", class_="params-specification-__5qD").find("a")["href"]  # pyright: ignore
+    except Exception:
+        card_data_url = None
+    title = soup.find("span", class_="title-info-title-text")
+    try:
+        brand, model = title.text.split()[0], title.text.split()[1].strip(",")  # pyright: ignore
+    except Exception:
+        brand, model = None, None
     date = soup.find("span", {"data-marker": "item-view/item-date"})
     price = soup.find("span", {"class": "styles-module-size_m-Co_QG", "itemprop": "price"})
     loc = soup.find("span", class_="style-item-address__string-wt61A")
     desc = soup.find("div", class_="style-item-description-html-qCwUL")
     data = {i[0]: i[1] for i in map(lambda x: re.split(r": ", x),
             (i.text for i in soup.find("ul", class_="params-paramsList-zLpAu")))}  # pyright: ignore
-    data.update(dict(title=title, brand=brand, model=model,
-                       date=date.text.strip("· ") if date else "",
-                       price=price.text if price else "",
-                       loc=loc.text if loc else "",
-                       desc=desc.text if desc else ""))
+    data.update(dict(Заголовок=title.text if title else None, Марка=brand,
+                     Модель=model, Дата=date.text.strip("· ") if date else None,
+                     Цена=price.text if price else None, Локация=loc.text if loc else None,
+                     Описание=desc.text if desc else None))
     return card_data_url, data
+
+
+def fill_details() -> dict[str, None]:
+    cols = ("Расход топлива смешанный", "Разгон до 100 км/ч",
+            "Колея передняя", "Колея задняя", "Длина", "Высота",
+            "Дорожный просвет", "Ёмкость топливного бака")
+    return {k: None for k in cols}
 
 
 @error_handler
 def proceed_full_card_data(session: requests.Session, card_url: str) -> None:
     card_markup = get_card_markup(session, card_url)
     details_url, data = parse_card(card_markup)
-    if not details_url or not data: raise QueryError("can't parse card")
+    if not data: raise QueryError("can't parse card. 403 response")
+    if details_url is None:
+        details = fill_details()
+        data.update(details)
+        return save_json(data)
     sleep(2)
     details_markup = get_details_markup(session, details_url)
     details = parse_card_details(details_markup)
