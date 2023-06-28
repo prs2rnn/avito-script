@@ -61,7 +61,7 @@ def get_pagen_urls(pagens: int = 1,
 
 def save_to_excel(data: dict[str, str | None]) -> None:
     """Сохраняет сформированный словарь в файл"""
-    path = Path(__file__).parent.joinpath("avito_cars.xlsx")
+    path = Path(__file__).parent.parent.joinpath("avito_cars.xlsx")
     if not path.exists():
         new_data = {key: list() for key in cols}
         df = pd.DataFrame(new_data)
