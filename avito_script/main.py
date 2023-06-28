@@ -1,22 +1,29 @@
 import functools
-import json
 import logging
 from pathlib import Path
 import re
 import sys
-from time import monotonic, sleep
+from time import sleep
 from typing import Iterable
 
 from bs4 import BeautifulSoup
 from fake_useragent import FakeUserAgent
+import pandas as pd
 import requests
 
-pagens = 1
-domain = "https://www.avito.ru"
+# названия столбцов, допускается пополнение кортежа или удаление элементов
+cols = (
+    "Заголовок", "Марка", "Модель", "Дата", "Цена", "Локация", "Ссылка",
+    "Год выпуска", "Поколение", "Состояние", "Модификация", "Объём двигателя",
+    "Тип двигателя", "Коробка передач", "Привод", "Тип кузова", "Цвет", "Руль",
+    "Ёмкость топливного бака", "Расход топлива смешанный", "Разгон до 100 км/ч",
+    "Длина", "Высота", "Дорожный просвет", "Колея передняя", "Колея задняя",
+    "VIN или номер кузова", "ПТС", "Описание",
+)
 
 
 class QueryError(Exception):
-    """base exception when query or parse page"""
+    """Исключение, возникающее при парсинге html и 403 ответе"""
 
 
 logging.basicConfig(
@@ -38,110 +45,139 @@ def error_handler(func):
     return wrapper
 
 
-def get_pagen_urls(n: int) -> Iterable[str]:
-    """returns all pagen links with each session"""
-    url_pagen = "https://www.avito.ru/perm/avtomobili?cd=1&p={page}&radius=200&searchRadius=200"
-    return (url_pagen.format(page=i) for i in range(1, n + 1))
+def get_pagen_urls(pagens: int = 1,
+                   radius: int = 200,
+                   city: str = "perm") -> Iterable[str]:
+    """
+    Формирует ссылки страниц с пагинацией, где на каждой предствлены 50 авто
+    Самое важное - указать число страниц пагинации
+    Либо заменить текующую ссылку url_pagen на нужную и отформатировать p={page},
+    где p={page} - число страниц пагинации
+    """
+    url_pagen = "https://www.avito.ru/{city}/avtomobili?cd=1&p={page}&radius={radius}&searchRadius={radius}"
+    return (url_pagen.format(page=i, radius=radius, city=city) for i in range(1, pagens + 1))
 
 
-def save_json(card_data: dict[str, str]) -> None:
-    with open(Path(__file__).parent.joinpath("avito_cars.json"), "a",
-              encoding="utf-8") as file:
-        json.dump(card_data, file, ensure_ascii=False, indent=3)
-        logging.info("saved car data in file successfully")
+def save_to_excel(data: dict[str, str | None]) -> None:
+    """Сохраняет сформированный словарь в файл"""
+    path = Path(__file__).parent.joinpath("avito_cars.xlsx")
+    if not path.exists():
+        new_data = {key: list() for key in cols}
+        df = pd.DataFrame(new_data)
+        with pd.ExcelWriter(path) as writer:  # pyright: ignore
+            df.to_excel(writer, index=False)
+        logging.info("Файл avito_cars.xlsx создан")
+    new_data = {key: [value] for key, value in data.items()}
+    df = pd.DataFrame(new_data)
+    with pd.ExcelWriter(
+            path, mode="a", if_sheet_exists="overlay"
+    ) as writer:  # pyright: ignore
+        start_row = writer.sheets["Sheet1"].max_row
+        df.to_excel(writer, index=False, header=False, startrow=start_row)
+    logging.info("Автомобиль успешно добавлен в avito_cars.xlsx")
 
 
 def get_card_markup(session: requests.Session, url: str) -> str:
-    markup = session.get(url, headers=headers, timeout=10).content.decode()
-    return markup
+    response = session.get(url, headers=headers, timeout=10)
+    if response.status_code != 200:
+        raise QueryError("Ошибка запроса к карточке с автомобилем")
+    return response.content.decode()
 
 
 def get_details_markup(session: requests.Session, url: str) -> str:
-    markup = session.get(url, headers=headers, timeout=10).content.decode()
-    return markup
+    response = session.get(url, headers=headers, timeout=10)
+    if response.status_code != 200:
+        raise QueryError("Ошибка запроса к характеристикам автомобиля")
+    return response.content.decode()
 
 
 def parse_pagen(markup_pagen: str) -> list[str]:
     soup = BeautifulSoup(markup_pagen, "lxml")
     card_urls = [
-    f'{domain}{card.find("div", class_="iva-item-title-py3i_").find("a")["href"]}'
+    f'https://www.avito.ru{card.find("div", class_="iva-item-title-py3i_").find("a")["href"]}'
     for card in soup.find_all("div", class_="iva-item-body-KLUuy")
     ]
     return card_urls
 
 
+@error_handler
 def get_card_urls(session: requests.Session, pagen_url: str) -> list[str]:
-    markup_pagen = session.get(pagen_url, headers=headers, timeout=10).content.decode()
-    card_urls = parse_pagen(markup_pagen)
-    if not card_urls: raise QueryError("can't parse card urls. 403 response.")
+    response = session.get(pagen_url, headers=headers, timeout=10)
+    try:
+        card_urls = parse_pagen(response.content.decode())
+    except Exception:
+        raise QueryError("Не удалось получить ссылки на автомобили")
     return card_urls
 
 
 def parse_card_details(markup_card_data: str) -> dict[str, str]:
-    """parse additional data from characteritics url page"""
+    """Извлекает дополнительную информацию о характеристиках автомобиля"""
     soup = BeautifulSoup(markup_card_data, "lxml")
-    cols = ("Расход топлива смешанный", "Разгон до 100 км/ч",
-            "Колея передняя", "Колея задняя", "Длина", "Высота",
-            "Дорожный просвет", "Ёмкость топливного бака")
-    full = {k.text: v.text for i in soup.find_all("div", class_="desktop-1jb7eb2")
+    full_details = {k.text: v.text for i in  soup.find_all("div", class_="desktop-1jb7eb2")
             for k, v in [i.find_all("span")]}
-    return dict(filter(lambda tpl: tpl[0] in cols, full.items()))
+    return dict(filter(lambda tpl: tpl[0] in cols, full_details.items()))
 
 
-def parse_card(card_markup: str) -> tuple[str | None, dict]:
+def parse_card(card_markup: str, card_url: str) -> tuple[str | None, dict]:
+    """Извлекает нужную информацию с карточки с автомобилем"""
     soup = BeautifulSoup(card_markup, "lxml")
+    main_data = {key: None for key in cols}
     try:
-        card_data_url = domain + \
-            soup.find("div", class_="params-specification-__5qD").find("a")["href"]  # pyright: ignore
-    except Exception:
-        card_data_url = None
+        details_url = "https://www.avito.ru" + soup.find("div",
+        class_="params-specification-__5qD").find("a")["href"]  # pyright: ignore
+    except (KeyError, TypeError):
+        details_url = None
     title = soup.find("span", class_="title-info-title-text")
-    try:
-        brand, model = title.text.split()[0], title.text.split()[1].strip(",")  # pyright: ignore
-    except Exception:
+    if title:
+        brand, model = title.text.split()[0], title.text.split()[1].strip(",")
+    else:
         brand, model = None, None
     date = soup.find("span", {"data-marker": "item-view/item-date"})
     price = soup.find("span", {"class": "styles-module-size_m-Co_QG", "itemprop": "price"})
     loc = soup.find("span", class_="style-item-address__string-wt61A")
     desc = soup.find("div", class_="style-item-description-html-qCwUL")
-    data = {i[0]: i[1] for i in map(lambda x: re.split(r": ", x),
-            (i.text for i in soup.find("ul", class_="params-paramsList-zLpAu")))}  # pyright: ignore
+    try:
+        data = {i[0]: i[1] for i in map(lambda x: re.split(r": ", x),
+                (i.text for i in soup.find("ul",  # pyright: ignore
+                class_="params-paramsList-zLpAu")))}
+    except Exception:
+        data = {}
     data.update(dict(Заголовок=title.text if title else None, Марка=brand,
                      Модель=model, Дата=date.text.strip("· ") if date else None,
                      Цена=price.text if price else None, Локация=loc.text if loc else None,
-                     Описание=desc.text if desc else None))
-    return card_data_url, data
-
-
-def fill_details() -> dict[str, None]:
-    cols = ("Расход топлива смешанный", "Разгон до 100 км/ч",
-            "Колея передняя", "Колея задняя", "Длина", "Высота",
-            "Дорожный просвет", "Ёмкость топливного бака")
-    return {k: None for k in cols}
+                     Описание=desc.text if desc else None, Ссылка=card_url))
+    main_data.update(data)  # pyright: ignore
+    return details_url, main_data
 
 
 @error_handler
-def proceed_full_card_data(session: requests.Session, card_url: str) -> None:
+def proceed_main_card_data(session: requests.Session,
+                           card_url: str) -> tuple[str, dict] | None:
+    """Первичный сбор данных для автомобиля"""
     card_markup = get_card_markup(session, card_url)
-    details_url, data = parse_card(card_markup)
-    if not data: raise QueryError("can't parse card. 403 response")
+    details_url, data = parse_card(card_markup, card_url)
     if details_url is None:
-        details = fill_details()
-        data.update(details)
-        return save_json(data)
-    sleep(2)
+        return save_to_excel(data)
+    return details_url, data
+
+
+@error_handler
+def proceed_full_card_data(session: requests.Session,
+                           details_url: str, data: dict) -> None:
+    """Вторичный сбор данных для автомобиля"""
     details_markup = get_details_markup(session, details_url)
     details = parse_card_details(details_markup)
     data.update(details)
-    save_json(data)
+    save_to_excel(data)
 
 
 if __name__ == "__main__":
-    start = monotonic()
-    for pagen_url in get_pagen_urls(pagens):
+    for pagen_url in get_pagen_urls():
         headers = {"user-agent": FakeUserAgent().random}
         session = requests.Session()
         for card_url in get_card_urls(session, pagen_url):
-            proceed_full_card_data(session, card_url)
-            sleep(4)
-    print(monotonic() - start)
+            result = proceed_main_card_data(session, card_url)
+            sleep(2)
+            if result: proceed_full_card_data(session, *result)
+            sleep(3)
+        session.close()
