@@ -19,7 +19,8 @@ cols = (
     "Тип двигателя", "Коробка передач", "Привод", "Тип кузова", "Цвет", "Руль",
     "Ёмкость топливного бака", "Расход топлива смешанный", "Разгон до 100 км/ч",
     "Длина", "Высота", "Дорожный просвет", "Колея передняя", "Колея задняя",
-    "VIN или номер кузова", "ПТС", "Описание",
+    "VIN или номер кузова", "ПТС", "Описание", "Владельцев по ПТС",
+    "Пробег", "Комплектация"
 )
 
 
@@ -41,7 +42,7 @@ def error_handler(func):
         try:
             result = func(*args, **kwargs)
             return result
-        except QueryError as err:
+        except (QueryError, requests.Timeout) as err:
             logging.error(err)
     return wrapper
 
@@ -126,7 +127,7 @@ def parse_card(card_markup: str, card_url: str) -> tuple[str | None, dict]:
     try:
         details_url = "https://www.avito.ru" + soup.find("div",
         class_="params-specification-__5qD").find("a")["href"]  # pyright: ignore
-    except (KeyError, TypeError):
+    except (KeyError, TypeError, AttributeError):
         details_url = None
     title = soup.find("span", class_="title-info-title-text")
     if title:
@@ -141,6 +142,7 @@ def parse_card(card_markup: str, card_url: str) -> tuple[str | None, dict]:
         data = {i[0]: i[1] for i in map(lambda x: re.split(r": ", x),
                 (i.text for i in soup.find("ul",  # pyright: ignore
                 class_="params-paramsList-zLpAu")))}
+        data = dict(filter(lambda tpl: tpl[0] in cols, data.items()))
     except Exception:
         data = {}
     data.update(dict(Заголовок=title.text if title else None, Марка=brand,
@@ -175,7 +177,7 @@ def proceed_full_card_data(session: requests.Session,
 if __name__ == "__main__":
     logging.info("Программа запущена")
     try:
-        for pagen_url in get_pagen_urls():
+        for pagen_url in get_pagen_urls(2, city="sankt-peterburg"):
             headers = {"user-agent": FakeUserAgent().random}
             session = requests.Session()
             for card_url in get_card_urls(session, pagen_url):
@@ -184,6 +186,7 @@ if __name__ == "__main__":
                 if result: proceed_full_card_data(session, *result)
                 sleep(3)
             session.close()
+        logging.info("Программа завершена")
     except (KeyboardInterrupt, EOFError):
         print()
         logging.info("Работа программы остановлена преждевременно")
