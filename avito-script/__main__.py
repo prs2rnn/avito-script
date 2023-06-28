@@ -12,6 +12,7 @@ import pandas as pd
 import requests
 
 # названия столбцов, допускается пополнение кортежа или удаление элементов
+# Если характеристики - важно указать как на сайте
 cols = (
     "Заголовок", "Марка", "Модель", "Дата", "Цена", "Локация", "Ссылка",
     "Год выпуска", "Поколение", "Состояние", "Модификация", "Объём двигателя",
@@ -172,12 +173,18 @@ def proceed_full_card_data(session: requests.Session,
 
 
 if __name__ == "__main__":
-    for pagen_url in get_pagen_urls():
-        headers = {"user-agent": FakeUserAgent().random}
-        session = requests.Session()
-        for card_url in get_card_urls(session, pagen_url):
-            result = proceed_main_card_data(session, card_url)
-            sleep(2)
-            if result: proceed_full_card_data(session, *result)
-            sleep(3)
-        session.close()
+    logging.info("Программа запущена")
+    try:
+        for pagen_url in get_pagen_urls():
+            headers = {"user-agent": FakeUserAgent().random}
+            session = requests.Session()
+            for card_url in get_card_urls(session, pagen_url):
+                result = proceed_main_card_data(session, card_url)
+                sleep(2)
+                if result: proceed_full_card_data(session, *result)
+                sleep(3)
+            session.close()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        logging.info("Работа программы остановлена преждевременно")
+        exit()
