@@ -12,7 +12,7 @@ import pandas as pd
 import requests
 
 # названия столбцов, допускается пополнение кортежа или удаление элементов,
-# важно указать как на сайте. в различных случаях 146 строка также должна быть изменена
+# важно указать как на сайте. в различных случаях 1xx строка также должна быть изменена
 cols = (
     "Заголовок", "Марка", "Модель", "Дата", "Цена", "Локация", "Ссылка",
     "Год выпуска", "Поколение", "Состояние", "Модификация", "Объём двигателя",
@@ -52,7 +52,6 @@ def get_pagen_urls(pagens: int = 1,
                    city: str = "perm") -> Iterable[str]:
     """
     Формирует ссылки страниц с пагинацией, где на каждой предствлены 50 авто
-    Самое важное - указать число страниц пагинации
     Либо заменить текующую ссылку url_pagen на нужную и отформатировать p={page},
     где p={page} - число страниц пагинации
     """
@@ -103,12 +102,11 @@ def parse_pagen(markup_pagen: str) -> list[str]:
 
 
 @error_handler
-def get_card_urls(session: requests.Session, pagen_url: str) -> list[str]:
+def get_card_urls(session, pagen_url):
     response = session.get(pagen_url, headers=headers, timeout=10)
-    try:
-        card_urls = parse_pagen(response.content.decode())
-    except Exception:
-        raise QueryError("Не удалось получить ссылки на автомобили")
+    if response.status_code != 200:
+        raise QueryError("Не удалось получить ссылки на автомобили. Программа будет завершена")
+    card_urls = parse_pagen(response.content.decode())
     return card_urls
 
 
@@ -190,4 +188,6 @@ if __name__ == "__main__":
     except (KeyboardInterrupt, EOFError):
         print()
         logging.info("Работа программы остановлена преждевременно")
+        exit()
+    except TypeError:
         exit()
